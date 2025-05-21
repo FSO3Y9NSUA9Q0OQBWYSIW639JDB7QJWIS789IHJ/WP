@@ -28,44 +28,59 @@ function askNumber() {
   });
 }
 
-async function startWhatsAppSession(cleanPhone) {
-  const sessionPath = `./sessions/${cleanPhone}`;
-  const { version } = await fetchLatestBaileysVersion();
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-  const msgRetryCounterCache = new NodeCache();
+async function requestCodeLoop(phone) {
+  const sessionPath = `./sessions/${phone}`;
 
-  const sock = makeWASocket({
-    version,
-    logger: pino({ level: 'silent' }),
-    browser: Browsers.windows('Firefox'),
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
-    },
-    msgRetryCounterCache,
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  const requestPairing = async () => {
-    if (!sock.authState || sock.authState.creds.registered) {
-      console.log("✅ Already registered.");
-      return;
-    }
+  const run = async () => {
     try {
-      const code = await sock.requestPairingCode(cleanPhone);
-      console.log(`📌 Pairing Code: ${code}`);
-    } catch (err) {
-      console.log(`⚠️ Error requesting code: ${err.message}`);
+      const { version } = await fetchLatestBaileysVersion();
+      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+      const msgRetryCounterCache = new NodeCache();
+
+      const sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.windows('Firefox'),
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+        },
+        msgRetryCounterCache,
+      });
+
+      sock.ev.on("creds.update", saveCreds);
+
+      // Try to request pairing code
+      try {
+        const code = await sock.requestPairingCode(phone);
+        console.log(`📌 Pairing Code: ${code}`);
+      } catch (err) {
+        console.log(`⚠️ Error requesting code: ${err.message}`);
+      }
+
+      // Wait 5 seconds
+      await new Promise(res => setTimeout(res, 5000));
+
+      // Delete session folder
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        console.log(`🗑️ Deleted session folder for ${phone}`);
+      }
+
+    } catch (e) {
+      console.log(`❌ Error: ${e.message}`);
     }
+
+    // Repeat again
+    run();
   };
 
-  // Initial call + loop every 5 seconds
-  setInterval(requestPairing, 5000);
+  run();
 }
 
+// Start
 (async () => {
   const phone = await askNumber();
   rl.close();
-  startWhatsAppSession(phone);
+  requestCodeLoop(phone);
 })();
